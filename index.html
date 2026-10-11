@@ -100,7 +100,14 @@
   button.link { border: none; background: none; color: var(--accent); padding: 6px 4px; min-height: 0; }
   button:disabled { opacity: .5; cursor: default; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .grow { flex: 1; }
+  .grow { flex: 1; min-width: 0; }
+  .mb10 { margin-bottom: 10px; }
+  .mb12 { margin-bottom: 12px; }
+  .tight { margin: 0 0 4px; }
+  .small { font-size: 13px; }
+  .demo-tag { font-weight: 400; font-size: 14px; }
+  .table-card { padding: 4px 10px; }
+  [hidden] { display: none !important; }
   .muted { color: var(--muted); font-size: 14px; }
   .chip {
     display: inline-block;
@@ -214,7 +221,7 @@
 <body>
 <div class="banner" role="note">Demo only. Fake data. Nothing leaves your browser.</div>
 <header class="top">
-  <button id="backBtn" class="link" style="display:none" aria-label="Back to patient list">&larr; Patients</button>
+  <button id="backBtn" class="link" hidden aria-label="Back to patient list">&larr; Patients</button>
   <h1 id="title">GLP-1 Patients</h1>
 </header>
 <main id="app"></main>
@@ -243,9 +250,12 @@
   function uid() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
 
   // ---------- demo data ----------
+  function localISO(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
   function daysAgo(n) {
     const d = new Date(); d.setDate(d.getDate() - n);
-    return d.toISOString().slice(0, 10);
+    return localISO(d);
   }
   function demoPatients() {
     return [
@@ -421,10 +431,10 @@
   function visitForm(p, v) {
     const isEdit = !!v;
     const last = latestVisit(p);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localISO(new Date());
     openDialog(`
       <h3>${isEdit ? 'Edit visit' : 'Log visit'}</h3>
-      <p class="muted" style="margin:0 0 4px">${esc(p.name)}</p>
+      <p class="muted tight">${esc(p.name)}</p>
       <form id="vf">
         <div class="grid2">
           <div>
@@ -465,13 +475,13 @@
 
   function renderList() {
     title.textContent = 'GLP-1 Patients';
-    backBtn.style.display = 'none';
+    backBtn.hidden = true;
     document.title = 'GLP-1 Tracker';
     const ps = [...state.patients].sort((a, b) => a.name.localeCompare(b.name));
     const demoCount = state.patients.filter(p => p.demo).length;
     let html = `
-      <div class="row" style="margin-bottom:12px">
-        <input id="search" type="search" placeholder="Search patients" class="grow" aria-label="Search patients" style="min-width:0">
+      <div class="row mb12">
+        <input id="search" type="search" placeholder="Search patients" class="grow" aria-label="Search patients">
         <button class="primary" id="addPatient">+ Patient</button>
       </div>`;
     html += '<div class="list" id="plist">';
@@ -483,7 +493,7 @@
       html += `
         <a class="item" href="#/patient/${esc(p.id)}" data-name="${esc(p.name.toLowerCase())}">
           <div class="row">
-            <div class="name grow">${esc(p.name)} ${fmtPct(pctLost(p))}${p.demo ? ' <span class="muted" style="font-weight:400;font-size:14px">(demo)</span>' : ''}</div>
+            <div class="name grow">${esc(p.name)} ${fmtPct(pctLost(p))}${p.demo ? ' <span class="muted demo-tag">(demo)</span>' : ''}</div>
             <span class="chip">${medLabel(p.medication)}</span>
           </div>
           <div class="meta muted">
@@ -528,8 +538,8 @@
     const p = findPatient(id);
     if (!p) { go('#/'); return; }
     title.textContent = p.name;
-    document.title = p.name + ' · GLP-1 Tracker';
-    backBtn.style.display = '';
+    document.title = 'Patient · GLP-1 Tracker';
+    backBtn.hidden = false;
     const visits = sortedVisits(p);
     const cw = currentWeight(p);
     const lost = Math.round((p.startWeight - cw) * 10) / 10;
@@ -537,7 +547,7 @@
 
     let html = `
       <div class="card">
-        <div class="row" style="margin-bottom:10px">
+        <div class="row mb10">
           <span class="chip">${medLabel(p.medication)}</span>
           ${heightLabel(p) ? `<span class="muted">${heightLabel(p)}</span>` : ''}
           ${p.demo ? '<span class="muted">Demo patient</span>' : ''}
@@ -563,11 +573,11 @@
     if (!visits.length) {
       html += '<div class="card empty">No visits logged yet.</div>';
     } else {
-      html += '<div class="card" style="padding:4px 10px"><table><thead><tr><th>Date</th><th>Dose</th><th class="num">Weight</th><th></th></tr></thead><tbody>';
+      html += '<div class="card table-card"><table><thead><tr><th>Date</th><th>Dose</th><th class="num">Weight</th><th></th></tr></thead><tbody>';
       for (const v of visits) {
         html += `<tr>
           <td>${fmtDate(v.date)}</td>
-          <td>${esc(v.dose)}${v.sideEffects ? `<div class="muted" style="font-size:13px">${esc(v.sideEffects)}</div>` : ''}</td>
+          <td>${esc(v.dose)}${v.sideEffects ? `<div class="muted small">${esc(v.sideEffects)}</div>` : ''}</td>
           <td class="num">${esc(v.weight)} lb</td>
           <td class="visit-actions"><button class="link" data-edit="${esc(v.id)}" aria-label="Edit visit">Edit</button></td>
         </tr>`;
