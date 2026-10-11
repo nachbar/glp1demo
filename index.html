@@ -21,6 +21,9 @@
     --danger: #b42318;
     --danger-bg: #fdecea;
     --chip: #e8eef3;
+    --series: #2a78d6;
+    --grid: #e9edf1;
+    --axis: #cfd6dd;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -37,6 +40,9 @@
       --danger: #ff7b6b;
       --danger-bg: #3a1a16;
       --chip: #263241;
+      --series: #3987e5;
+      --grid: #253039;
+      --axis: #3a4855;
     }
   }
   * { box-sizing: border-box; }
@@ -162,6 +168,34 @@
   dialog .inner { padding: 18px; }
   dialog h3 { margin: 0 0 6px; }
   .footer-note { text-align: center; font-size: 12px; color: var(--muted); margin-top: 24px; }
+  .chart-card { padding: 14px 12px 8px; }
+  .chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 0 4px; margin-bottom: 4px; }
+  .chart-head h2 { font-size: 15px; margin: 0; }
+  .chart-head .muted { font-size: 12px; }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; outline: none; }
+  .chart svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+  .chart .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .chart .grid { stroke: var(--grid); stroke-width: 1; }
+  .chart .axis { stroke: var(--axis); stroke-width: 1; }
+  .chart .area { fill: var(--series); fill-opacity: .1; }
+  .chart .line { fill: none; stroke: var(--series); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .dot { fill: var(--series); stroke: var(--card); stroke-width: 2; }
+  .chart .dose-line { stroke: var(--muted); stroke-width: 1; stroke-opacity: .7; }
+  .chart .dose-label { font-size: 11px; fill: var(--muted); font-weight: 600; }
+  .chart .start-line { stroke: var(--axis); stroke-width: 1; }
+  .chart .start-label { font-size: 10px; fill: var(--muted); }
+  .chart .end-label { font-size: 12px; font-weight: 600; fill: var(--text); }
+  .chart .cross { stroke: var(--text); stroke-width: 1; stroke-opacity: .5; display: none; }
+  .chart .focus-dot { fill: var(--series); stroke: var(--card); stroke-width: 2; display: none; }
+  .chart .tip {
+    position: absolute; display: none; pointer-events: none; z-index: 2;
+    background: var(--card); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 10px; font-size: 12px; line-height: 1.35;
+    box-shadow: 0 2px 8px rgba(0,0,0,.15); max-width: 200px;
+  }
+  .chart .tip .v { font-size: 15px; font-weight: 700; }
+  .chart .tip .d { color: var(--muted); }
   .sr { position: absolute; left: -9999px; }
 </style>
 </head>
@@ -452,6 +486,10 @@
           <div class="stat"><div class="v ${lost > 0 ? 'delta-down' : lost < 0 ? 'delta-up' : ''}">${lost > 0 ? '-' : lost < 0 ? '+' : ''}${Math.abs(lost)}</div><div class="l">${pct ? (pct > 0 ? '-' : '+') + Math.abs(pct) + '%' : 'Change (lb)'}</div></div>
         </div>
       </div>
+      ${visits.length ? `<div class="card chart-card">
+        <div class="chart-head"><h2>Weight over time</h2><span class="muted">lb &middot; vertical markers = dose changes</span></div>
+        <div class="chart" id="chart"></div>
+      </div>` : ''}
       <div class="section-title">
         <h2>Visits (${visits.length})</h2>
         <button class="primary" id="addVisit">+ Log visit</button>
@@ -472,6 +510,8 @@
     }
     html += `<div class="actions"><button class="danger" id="delPatient">Delete patient</button></div>`;
     app.innerHTML = html;
+    chartPatient = visits.length ? p : null;
+    if (chartPatient) renderChart(p, $('#chart'));
 
     $('#editPatient').onclick = () => patientForm(p);
     $('#addVisit').onclick = () => visitForm(p, null);
@@ -493,6 +533,180 @@
     $('#delPatient').onclick = () => confirmDialog('Delete ' + p.name + '?', 'This removes the patient and all of their visits from this browser.', 'Delete patient', () => {
       state.patients = state.patients.filter(x => x.id !== p.id); save(); go('#/');
     });
+  }
+
+  // ---------- weight chart ----------
+  let chartPatient = null;
+  let chartOutsideTap = null;
+  let lastChartWidth = 0;
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const c = $('#chart');
+      if (chartPatient && c && c.clientWidth !== lastChartWidth) renderChart(chartPatient, c);
+    }, 150);
+  });
+
+  function parseDate(iso) { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d).getTime(); }
+  function niceStep(span, target) {
+    const raw = span / Math.max(1, target);
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    for (const m of [1, 2, 5, 10]) if (raw <= m * mag) return m * mag;
+    return 10 * mag;
+  }
+  function svgEl(tag, attrs, text) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    if (text != null) el.textContent = text;
+    return el;
+  }
+  function fmtShort(ts, withYear) {
+    return new Date(ts).toLocaleDateString(undefined, withYear ? { month: 'short', day: 'numeric', year: '2-digit' } : { month: 'short', day: 'numeric' });
+  }
+
+  function renderChart(p, container) {
+    const pts = [...(p.visits || [])]
+      .filter(v => v.date && v.weight != null)
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+      .map(v => ({ v, t: parseDate(v.date), w: Number(v.weight) }));
+    container.innerHTML = '';
+    if (!pts.length) return;
+
+    const W = Math.max(240, container.clientWidth || 320);
+    lastChartWidth = container.clientWidth;
+    const H = 230;
+    const M = { top: 34, right: 56, bottom: 26, left: 38 };
+    const pw = W - M.left - M.right, ph = H - M.top - M.bottom;
+
+    // scales
+    let t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+    if (t1 - t0 < 86400000 * 2) { t0 -= 86400000; t1 += 86400000; }
+    const ws = pts.map(d => d.w).concat([Number(p.startWeight)].filter(n => !isNaN(n)));
+    let wmin = Math.min(...ws), wmax = Math.max(...ws);
+    if (wmax - wmin < 4) { wmin -= 2; wmax += 2; }
+    const step = niceStep(wmax - wmin, 3);
+    const y0 = Math.floor(wmin / step) * step - (wmin % step === 0 ? step : 0);
+    const y1 = Math.ceil(wmax / step) * step + (wmax % step === 0 ? step : 0);
+    const X = t => M.left + ((t - t0) / (t1 - t0)) * pw;
+    const Y = w => M.top + (1 - (w - y0) / (y1 - y0)) * ph;
+
+    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', tabindex: '0',
+      'aria-label': `Weight over time for ${p.name}, ${pts.length} visit${pts.length === 1 ? '' : 's'}; details in the visits table below` });
+
+    // gridlines + y ticks
+    for (let w = y0; w <= y1 + 1e-9; w += step) {
+      const y = Y(w);
+      svg.appendChild(svgEl('line', { class: w === y0 ? 'axis' : 'grid', x1: M.left, x2: M.left + pw, y1: y, y2: y }));
+      svg.appendChild(svgEl('text', { class: 'tick', x: M.left - 6, y: y + 4, 'text-anchor': 'end' }, String(Math.round(w))));
+    }
+    // x ticks
+    const withYear = new Date(t0).getFullYear() !== new Date(t1).getFullYear();
+    const nx = Math.max(2, Math.min(6, Math.floor(pw / 72)));
+    for (let i = 0; i < nx; i++) {
+      const t = t0 + ((t1 - t0) * i) / (nx - 1);
+      const anchor = i === 0 ? 'start' : i === nx - 1 ? 'end' : 'middle';
+      svg.appendChild(svgEl('text', { class: 'tick', x: X(t), y: H - 8, 'text-anchor': anchor }, fmtShort(t, withYear)));
+    }
+
+    // starting-weight reference
+    const sw = Number(p.startWeight);
+    if (!isNaN(sw) && sw !== pts[0].w) {
+      const y = Y(sw);
+      svg.appendChild(svgEl('line', { class: 'start-line', x1: M.left, x2: M.left + pw, y1: y, y2: y }));
+      svg.appendChild(svgEl('text', { class: 'start-label', x: M.left + 4, y: y - 4 }, 'Start ' + sw));
+    }
+
+    // dose-change markers (first visit + every visit whose dose differs from the previous one)
+    const norm = s => String(s || '').trim().toLowerCase();
+    const changes = [];
+    pts.forEach((d, i) => { if (i === 0 || norm(d.v.dose) !== norm(pts[i - 1].v.dose)) changes.push(d); });
+    let lastLabelEnd = [-Infinity, -Infinity]; // per row
+    for (const d of changes) {
+      const x = X(d.t);
+      svg.appendChild(svgEl('line', { class: 'dose-line', x1: x, x2: x, y1: M.top - 4, y2: M.top + ph }));
+      const label = String(d.v.dose || '').replace(/\s*(weekly|daily|per week|q\s*week)\s*$/i, '').trim() || '—';
+      const est = label.length * 6.2 + 6;
+      const flip = x + est > W - 4;
+      const lx = flip ? x - 4 : x + 4;
+      const start = flip ? x - est : x;
+      const row = start > lastLabelEnd[0] + 4 ? 0 : start > lastLabelEnd[1] + 4 ? 1 : 0;
+      lastLabelEnd[row] = flip ? x : x + est;
+      const ly = M.top - 8 - (row ? 0 : 12);
+      svg.appendChild(svgEl('text', { class: 'dose-label', x: lx, y: ly, 'text-anchor': flip ? 'end' : 'start' }, label));
+    }
+
+    // area + line + dots
+    const coords = pts.map(d => [X(d.t), Y(d.w)]);
+    if (coords.length > 1) {
+      const path = coords.map((c, i) => (i ? 'L' : 'M') + c[0].toFixed(1) + ' ' + c[1].toFixed(1)).join(' ');
+      const base = M.top + ph;
+      svg.appendChild(svgEl('path', { class: 'area', d: `${path} L${coords[coords.length - 1][0].toFixed(1)} ${base} L${coords[0][0].toFixed(1)} ${base} Z` }));
+      svg.appendChild(svgEl('path', { class: 'line', d: path }));
+    }
+    coords.forEach(c => svg.appendChild(svgEl('circle', { class: 'dot', cx: c[0], cy: c[1], r: 4 })));
+
+    // end label (last value)
+    const last = coords[coords.length - 1];
+    svg.appendChild(svgEl('text', { class: 'end-label', x: last[0] + 9, y: last[1] + 4 }, pts[pts.length - 1].w + ' lb'));
+
+    // hover layer
+    const cross = svgEl('line', { class: 'cross', y1: M.top, y2: M.top + ph });
+    const focusDot = svgEl('circle', { class: 'focus-dot', r: 6 });
+    const hit = svgEl('rect', { x: M.left - 12, y: 0, width: pw + 24, height: H, fill: 'transparent' });
+    svg.appendChild(cross); svg.appendChild(focusDot); svg.appendChild(hit);
+    container.appendChild(svg);
+
+    const tip = document.createElement('div');
+    tip.className = 'tip';
+    const tipV = document.createElement('div'); tipV.className = 'v';
+    const tipD = document.createElement('div'); tipD.className = 'd';
+    const tipDose = document.createElement('div');
+    const tipSE = document.createElement('div'); tipSE.className = 'd';
+    tip.append(tipV, tipD, tipDose, tipSE);
+    container.appendChild(tip);
+
+    let sel = -1;
+    function show(i) {
+      sel = i;
+      const d = pts[i], c = coords[i];
+      cross.setAttribute('x1', c[0]); cross.setAttribute('x2', c[0]); cross.style.display = 'block';
+      focusDot.setAttribute('cx', c[0]); focusDot.setAttribute('cy', c[1]); focusDot.style.display = 'block';
+      tipV.textContent = d.w + ' lb';
+      tipD.textContent = fmtDate(d.v.date);
+      tipDose.textContent = d.v.dose || '';
+      tipSE.textContent = d.v.sideEffects ? 'Side effects: ' + d.v.sideEffects : '';
+      tip.style.display = 'block';
+      const scale = container.clientWidth / W;
+      const cw = container.clientWidth, tw = tip.offsetWidth, th = tip.offsetHeight;
+      let left = c[0] * scale - tw / 2;
+      left = Math.max(0, Math.min(cw - tw, left));
+      let top = c[1] * scale - th - 14;
+      if (top < 0) top = c[1] * scale + 14;
+      tip.style.left = left + 'px'; tip.style.top = top + 'px';
+    }
+    function hide() { sel = -1; cross.style.display = focusDot.style.display = tip.style.display = 'none'; }
+    function nearest(clientX) {
+      const r = svg.getBoundingClientRect();
+      const x = ((clientX - r.left) / r.width) * W;
+      let best = 0, bd = Infinity;
+      coords.forEach((c, i) => { const d = Math.abs(c[0] - x); if (d < bd) { bd = d; best = i; } });
+      return best;
+    }
+    hit.addEventListener('pointermove', e => show(nearest(e.clientX)));
+    hit.addEventListener('pointerdown', e => show(nearest(e.clientX)));
+    svg.addEventListener('pointerleave', e => { if (e.pointerType !== 'touch') hide(); });
+    if (chartOutsideTap) document.removeEventListener('pointerdown', chartOutsideTap);
+    chartOutsideTap = e => { if (!container.contains(e.target)) hide(); };
+    document.addEventListener('pointerdown', chartOutsideTap);
+    svg.addEventListener('keydown', e => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        const n = pts.length;
+        show(sel < 0 ? (e.key === 'ArrowRight' ? 0 : n - 1) : (sel + (e.key === 'ArrowRight' ? 1 : n - 1)) % n);
+      } else if (e.key === 'Escape') hide();
+    });
+    svg.addEventListener('blur', hide);
   }
 
   function render() {
